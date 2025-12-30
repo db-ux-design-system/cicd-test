@@ -34,50 +34,150 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "Setting project state for non-patch PR to '🎁 Ready for review'"
+          set -e  # Exit on error
 
-          # Get project data (assumes PR is already added to project by GitHub)
-          PROJECT_DATA=$(gh project list --owner db-ux-design-system --format json --limit 1)
-          PROJECT_NUMBER=$(echo "$PROJECT_DATA" | jq -r '.[0].number')
-          PROJECT_ID=$(echo "$PROJECT_DATA" | jq -r '.[0].id')
+          echo "Setting project state for non-patch PR to '🎁 Ready for review'"
+          echo "PR URL: ${{ github.event.pull_request.html_url }}"
+
+          # Helper function to retry commands with exponential backoff
+          retry_with_backoff() {
+            local max_attempts=3
+            local timeout=1
+            local attempt=1
+            local exitCode=0
+            
+            while [ $attempt -le $max_attempts ]; do
+              echo "Attempt $attempt of $max_attempts: $*"
+              
+              if "$@"; then
+                return 0
+              else
+                exitCode=$?
+              fi
+              
+              if [ $attempt -lt $max_attempts ]; then
+                echo "Command failed with exit code $exitCode. Retrying in ${timeout}s..."
+                sleep $timeout
+                timeout=$((timeout * 2))
+              fi
+              
+              attempt=$((attempt + 1))
+            done
+            
+            echo "Command failed after $max_attempts attempts"
+            return $exitCode
+          }
+
+          # Get project data with retry (assumes PR is already added to project by GitHub)
+          echo "Fetching project data..."
+          if ! PROJECT_DATA=$(retry_with_backoff gh project list --owner db-ux-design-system --format json --limit 1); then
+            echo "ERROR: Failed to fetch project data after retries"
+            exit 1
+          fi
+
+          # Validate PROJECT_DATA
+          if [ -z "$PROJECT_DATA" ] || [ "$PROJECT_DATA" = "null" ] || [ "$PROJECT_DATA" = "[]" ]; then
+            echo "ERROR: PROJECT_DATA is empty or invalid"
+            echo "PROJECT_DATA content: $PROJECT_DATA"
+            exit 1
+          fi
+
+          echo "DEBUG: PROJECT_DATA retrieved successfully"
+          echo "DEBUG: PROJECT_DATA (first 200 chars): ${PROJECT_DATA:0:200}"
+
+          # Extract and validate project number and ID
+          PROJECT_NUMBER=$(echo "$PROJECT_DATA" | jq -r '.[0].number // empty')
+          PROJECT_ID=$(echo "$PROJECT_DATA" | jq -r '.[0].id // empty')
 
           if [ -z "$PROJECT_NUMBER" ] || [ "$PROJECT_NUMBER" = "null" ]; then
-            echo "Unable to find project"
-            exit 0
+            echo "ERROR: Unable to find project number"
+            echo "DEBUG: Parsed PROJECT_NUMBER: '$PROJECT_NUMBER'"
+            echo "DEBUG: Full PROJECT_DATA: $PROJECT_DATA"
+            exit 1
+          fi
+
+          if [ -z "$PROJECT_ID" ] || [ "$PROJECT_ID" = "null" ]; then
+            echo "ERROR: Unable to find project ID"
+            echo "DEBUG: Parsed PROJECT_ID: '$PROJECT_ID'"
+            echo "DEBUG: Full PROJECT_DATA: $PROJECT_DATA"
+            exit 1
           fi
 
           echo "Found project number: $PROJECT_NUMBER, ID: $PROJECT_ID"
 
-          # Get the Status field and option IDs in one call
-          FIELD_DATA=$(gh project field-list "$PROJECT_NUMBER" --owner db-ux-design-system --format json)
-          FIELD_ID=$(echo "$FIELD_DATA" | jq -r '.fields[] | select(.name == "Status") | .id')
-          OPTION_ID=$(echo "$FIELD_DATA" | jq -r '.fields[] | select(.name == "Status") | .options[] | select(.name == "🎁 Ready for review") | .id')
+          # Get the Status field and option IDs with retry
+          echo "Fetching field data for project $PROJECT_NUMBER..."
+          if ! FIELD_DATA=$(retry_with_backoff gh project field-list "$PROJECT_NUMBER" --owner db-ux-design-system --format json); then
+            echo "ERROR: Failed to fetch field data after retries"
+            exit 1
+          fi
 
-          if [ -z "$FIELD_ID" ] || [ -z "$OPTION_ID" ] || [ "$FIELD_ID" = "null" ] || [ "$OPTION_ID" = "null" ]; then
-            echo "Could not find Status field or '🎁 Ready for review' option"
-            exit 0
+          # Validate FIELD_DATA
+          if [ -z "$FIELD_DATA" ] || [ "$FIELD_DATA" = "null" ] || [ "$FIELD_DATA" = "{}" ]; then
+            echo "ERROR: FIELD_DATA is empty or invalid"
+            echo "DEBUG: FIELD_DATA content: $FIELD_DATA"
+            exit 1
+          fi
+
+          echo "DEBUG: FIELD_DATA retrieved successfully"
+          echo "DEBUG: FIELD_DATA (first 200 chars): ${FIELD_DATA:0:200}"
+
+          # Extract and validate field ID and option ID
+          FIELD_ID=$(echo "$FIELD_DATA" | jq -r '.fields[] | select(.name == "Status") | .id // empty')
+          OPTION_ID=$(echo "$FIELD_DATA" | jq -r '.fields[] | select(.name == "Status") | .options[] | select(.name == "🎁 Ready for review") | .id // empty')
+
+          if [ -z "$FIELD_ID" ] || [ "$FIELD_ID" = "null" ]; then
+            echo "ERROR: Could not find Status field"
+            echo "DEBUG: Parsed FIELD_ID: '$FIELD_ID'"
+            echo "DEBUG: Available fields: $(echo "$FIELD_DATA" | jq -r '.fields[].name')"
+            exit 1
+          fi
+
+          if [ -z "$OPTION_ID" ] || [ "$OPTION_ID" = "null" ]; then
+            echo "ERROR: Could not find '🎁 Ready for review' option in Status field"
+            echo "DEBUG: Parsed OPTION_ID: '$OPTION_ID'"
+            echo "DEBUG: Available options: $(echo "$FIELD_DATA" | jq -r '.fields[] | select(.name == "Status") | .options[].name')"
+            exit 1
           fi
 
           echo "Found Status field ID: $FIELD_ID"
           echo "Found option ID for '🎁 Ready for review': $OPTION_ID"
 
-          # Get the item ID for this PR
-          ITEM_ID=$(gh project item-list "$PROJECT_NUMBER" --owner db-ux-design-system --format json --limit 100 | jq -r --arg pr_url "${{ github.event.pull_request.html_url }}" '.items[] | select(.content.url == $pr_url) | .id')
+          # Get the item ID for this PR with retry
+          echo "Fetching item list for project $PROJECT_NUMBER..."
+          if ! ITEM_LIST=$(retry_with_backoff gh project item-list "$PROJECT_NUMBER" --owner db-ux-design-system --format json --limit 100); then
+            echo "ERROR: Failed to fetch item list after retries"
+            exit 1
+          fi
+
+          # Validate ITEM_LIST
+          if [ -z "$ITEM_LIST" ] || [ "$ITEM_LIST" = "null" ]; then
+            echo "ERROR: ITEM_LIST is empty or invalid"
+            echo "DEBUG: ITEM_LIST content: $ITEM_LIST"
+            exit 1
+          fi
+
+          echo "DEBUG: ITEM_LIST retrieved successfully"
+
+          ITEM_ID=$(echo "$ITEM_LIST" | jq -r --arg pr_url "${{ github.event.pull_request.html_url }}" '.items[] | select(.content.url == $pr_url) | .id // empty')
 
           if [ -z "$ITEM_ID" ] || [ "$ITEM_ID" = "null" ]; then
-            echo "PR not found in project"
-            exit 0
+            echo "ERROR: PR not found in project items"
+            echo "DEBUG: Parsed ITEM_ID: '$ITEM_ID'"
+            echo "DEBUG: Looking for PR URL: ${{ github.event.pull_request.html_url }}"
+            echo "DEBUG: Available item URLs (first 5): $(echo "$ITEM_LIST" | jq -r '.items[0:5][].content.url')"
+            exit 1
           fi
 
           echo "Found item ID: $ITEM_ID"
 
-          # Update the status field using gh project commands
-          gh project item-edit --id "$ITEM_ID" --field-id "$FIELD_ID" --project-id "$PROJECT_ID" --single-select-option-id "$OPTION_ID"
-
-          if [ $? -eq 0 ]; then
-            echo "Successfully set project status to '🎁 Ready for review'"
+          # Update the status field with retry
+          echo "Updating project status..."
+          if retry_with_backoff gh project item-edit --id "$ITEM_ID" --field-id "$FIELD_ID" --project-id "$PROJECT_ID" --single-select-option-id "$OPTION_ID"; then
+            echo "✅ Successfully set project status to '🎁 Ready for review'"
           else
-            echo "Failed to update project status"
+            echo "ERROR: Failed to update project status after retries"
+            exit 1
           fi
         continue-on-error: true
 
