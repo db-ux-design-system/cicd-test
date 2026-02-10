@@ -1,0 +1,39 @@
+{
+  "name": "stencil-showcase",
+  "version": "0.0.0",
+  "description": "Stencil showcase",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/db-ux-design-system/core-web.git"
+  },
+  "license": "Apache-2.0",
+  "private": true,
+  "scripts": {
+    "build": "npm-run-all build:*",
+    "build:_stencil": "npm run dev-build --workspace @db-ux/wc-core-components",
+    "build:angular": "ng build",
+    "dev": "npm-run-all --parallel dev:*",
+    "dev:angular": "npm run start -- --open",
+    "dev:stencil": "npm run start --workspace @db-ux/wc-core-components",
+    "ng": "ng",
+    "preview": "npx http-server ../../build-showcases",
+    "start": "ng serve --port 4202 --serve-path stencil-showcase",
+    "test:a11y-checker": "cross-env showcase=stencil-showcase npx playwright test --config=../playwright.a11y-checker.ts",
+    "test:aria-snapshots": "cross-env showcase=stencil-showcase npx playwright test --config=../playwright.aria-snapshots.ts",
+    "test:axe-core": "cross-env showcase=stencil-showcase npx playwright test --config=../playwright.axe-core.ts",
+    "test:e2e": "cross-env showcase=stencil-showcase npx playwright test --config=../playwright.config.ts",
+    "test:ui": "npm run test:e2e -- --ui",
+    "test:visual-snapshots": "cross-env showcase=stencil-showcase npx playwright test --config=../playwright.visual-snapshots.ts",
+    "watch": "ng build --watch --configuration development"
+  },
+  "dependencies": {
+    "@stencil/core": "4.42.1"
+  },
+  "devDependencies": {
+    "npm-run-all2": "8.0.4",
+    "typescript": "5.9.3"
+  },
+  "overrides": {
+    "cross-spawn": "7.0.6"
+  }
+}
